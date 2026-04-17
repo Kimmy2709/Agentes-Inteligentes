@@ -35,7 +35,7 @@ fuera del mapa), simplemente se queda en su lugar.
 """
 
 from entorno import Agente
-
+from collections import deque
 
 class MiAgente(Agente):
     """
@@ -45,18 +45,31 @@ class MiAgente(Agente):
     llegue del punto A al punto B en el grid.
     """
 
+    DELTAS = {
+        'arriba':    (-1,  0),
+        'abajo':     ( 1,  0),
+        'izquierda': ( 0, -1),
+        'derecha':   ( 0,  1),
+    }
+
     def __init__(self):
-        super().__init__(nombre="Mi Agente")
-        # Puedes agregar atributos aquí si los necesitas.
-        # Ejemplo:
-        #   self.pasos = 0
-        #   self.memoria = {}
+        super().__init__(nombre="Agente BFS")
+        self.plan = []
+        self.mapa_local = {}
+        self.meta = None
+        self.pasos = 0
+        self.historial = []
+        self.visitadas = set()
 
     def al_iniciar(self):
-        """Se llama una vez al iniciar la simulación. Opcional."""
-        pass
+        self.plan = []
+        self.mapa_local = {}
+        self.meta = None
+        self.pasos = 0
+        self.historial = []
+        self.visitadas = set()
 
-    def decidir(self, percepcion):
+    def decidir(self, percepcion: dict)-> str:
         
         """
         Decide la siguiente acción del agente.
@@ -67,26 +80,135 @@ class MiAgente(Agente):
         Retorna:
             'arriba', 'abajo', 'izquierda' o 'derecha'
         """
-        # ╔══════════════════════════════════════╗
-        # ║   ESCRIBE TU LÓGICA AQUÍ             ║
-        # ╚══════════════════════════════════════╝
+        
+        self.pasos += 1
+        pos_actual = percepcion['posicion']
+        self.historial.append(pos_actual)
+        self.visitadas.add(pos_actual)
 
-        # Ejemplo básico (bórralo y escribe tu propia lógica):
-        #
-        # vert, horiz = percepcion['direccion_meta']
-        #
-        # if percepcion[vert] == 'libre' or percepcion[vert] == 'meta':
-        #     return vert
-        # if percepcion[horiz] == 'libre' or percepcion[horiz] == 'meta':
-        #     return horiz
-        #
-        # return 'abajo'
-        print('Hola decidir')
+        self._actualizar_mapa(pos_actual, percepcion)
+
+        # Si la meta es adyacente, ir directo
         for direccion in self.ACCIONES:
-            celda = percepcion[direccion]
-            if celda == 'meta':
-                return direccion
-            if celda == 'libre':
+            if percepcion.get(direccion) == 'meta':
                 return direccion
 
-        return 'abajo'  # ← Reemplazar con tu lógica
+        # Validar si el plan actual sigue siendo válido
+        if self.plan:
+            siguiente = self.plan[0]
+            if percepcion.get(siguiente) in ('pared', None):
+                self.plan = []
+
+        # Calcular nuevo plan si no hay uno
+        if not self.plan:
+            if self.meta is not None:
+                self.plan = self._bfs_solo_conocidas(pos_actual)
+
+            # Si BFS no encontró ruta, explorar inteligentemente
+            if not self.plan:
+                return self._explorar(pos_actual, percepcion)
+
+        return self.plan.pop(0)
+    
+        
+    # ─────────────────────────────────────────────────
+    #  BFS — Búsqueda en Anchura 
+    # ─────────────────────────────────────────────────
+ 
+    def _bfs_solo_conocidas(self, inicio: tuple) -> list:
+        """BFS que SOLO usa celdas confirmadas como libres."""
+        if self.meta is None:
+            return []
+
+        cola = deque()
+        cola.append((inicio, []))
+        visitados = {inicio}
+
+        while cola:
+            pos, camino = cola.popleft()
+
+            for direccion, (dr, dc) in self.DELTAS.items():
+                vecino = (pos[0] + dr, pos[1] + dc)
+
+                if vecino in visitados:
+                    continue
+
+                if vecino == self.meta:
+                    return camino + [direccion]
+
+                # Solo avanzar si la celda está CONFIRMADA como libre
+                if self.mapa_local.get(vecino) == 'libre':
+                    visitados.add(vecino)
+                    cola.append((vecino, camino + [direccion]))
+
+        return []
+    
+    # ─────────────────────────────────────────────────
+    #  Explorar sin loop
+    # ─────────────────────────────────────────────────
+ 
+    def _explorar(self, pos_actual: tuple, percepcion: dict) -> str:
+        """
+        Exploración que evita loops: prioriza celdas no visitadas,
+        luego se acerca a la meta, nunca repite si puede evitarlo.
+        """
+        vert, horiz = percepcion.get('direccion_meta', ('abajo', 'derecha'))
+
+        # Separar opciones en: no visitadas vs visitadas
+        no_visitadas = []
+        visitadas_ok = []
+
+        for direccion in self.ACCIONES:
+            celda = percepcion.get(direccion)
+            if celda not in ('libre', 'meta'):
+                continue
+
+            r, c = pos_actual
+            dr, dc = self.DELTAS[direccion]
+            vecino = (r + dr, c + dc)
+
+            if vecino not in self.visitadas:
+                no_visitadas.append(direccion)
+            else:
+                visitadas_ok.append(direccion)
+
+    # Ordenar no_visitadas priorizando dirección hacia la meta
+        def puntaje(d):
+            score = 0
+            if d == vert:
+                score += 2
+            if d == horiz:
+                score += 1
+            return -score  # negativo para ordenar de mayor a menor
+
+        no_visitadas.sort(key=puntaje)
+        visitadas_ok.sort(key=puntaje)
+
+        # Primero intentar celdas no visitadas
+        for direccion in no_visitadas:
+            return direccion
+
+        # Si todas fueron visitadas, ir hacia la meta de todas formas
+        for direccion in visitadas_ok:
+            return direccion
+
+        return 'abajo'
+
+    def _actualizar_mapa(self, pos: tuple, percepcion: dict):
+        r, c = pos
+        self.mapa_local[pos] = 'libre'
+
+        for direccion, (dr, dc) in self.DELTAS.items():
+            vecino = (r + dr, c + dc)
+            estado = percepcion.get(direccion)
+
+            if estado is None:
+                self.mapa_local[vecino] = 'pared'
+            elif estado == 'meta':
+                self.mapa_local[vecino] = 'libre'
+                self.meta = vecino
+            elif estado == 'pared':
+                self.mapa_local[vecino] = 'pared'
+            elif estado == 'libre':
+                if vecino not in self.mapa_local:
+                    self.mapa_local[vecino] = 'libre'
