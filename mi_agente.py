@@ -34,15 +34,16 @@ Si tu agente retorna un movimiento inválido (hacia pared o
 fuera del mapa), simplemente se queda en su lugar.
 """
 
-from entorno import Agente
 from collections import deque
+from entorno import Agente
+
 
 class MiAgente(Agente):
     """
-    Tu agente de navegación.
-
-    Implementa el método decidir() para que el agente
-    llegue del punto A al punto B en el grid.
+    Agente basado en utilidad.
+    Funcion de utilidad: U = -pasos (camino mas corto).
+    Algoritmo: BFS con cola FIFO. Replanifica cada vez que
+    descubre celdas nuevas para mantener la ruta optima.
     """
 
     DELTAS = {
@@ -53,162 +54,140 @@ class MiAgente(Agente):
     }
 
     def __init__(self):
-        super().__init__(nombre="Agente BFS")
-        self.plan = []
-        self.mapa_local = {}
-        self.meta = None
-        self.pasos = 0
-        self.historial = []
-        self.visitadas = set()
+        super().__init__(nombre="Agente BFS — Basado en Utilidad")
+        self.plan         = []
+        self.mapa         = {}
+        self.meta         = None
+        self.visitadas    = set()
+        self.celdas_antes = 0
 
     def al_iniciar(self):
-        self.plan = []
-        self.mapa_local = {}
-        self.meta = None
-        self.pasos = 0
-        self.historial = []
-        self.visitadas = set()
+        self.plan         = []
+        self.mapa         = {}
+        self.meta         = None
+        self.visitadas    = set()
+        self.celdas_antes = 0
 
-    def decidir(self, percepcion: dict)-> str:
-        
-        """
-        Decide la siguiente acción del agente.
-        
-        Parámetros:
-            percepcion – diccionario con lo que el agente puede ver
+  
+    def decidir(self, percepcion: dict) -> str:
+        pos = percepcion['posicion']
+        self.visitadas.add(pos)
 
-        Retorna:
-            'arriba', 'abajo', 'izquierda' o 'derecha'
-        """
-        
-        self.pasos += 1
-        pos_actual = percepcion['posicion']
-        self.historial.append(pos_actual)
-        self.visitadas.add(pos_actual)
+        # Paso 1: aprender del entorno con lo que vemos ahora
+        self._registrar_percepcion(pos, percepcion)
 
-        self._actualizar_mapa(pos_actual, percepcion)
-
-        # Si la meta es adyacente, ir directo
+        # Paso 2: si la meta esta justo al lado, ir directo
         for direccion in self.ACCIONES:
-            if percepcion.get(direccion) == 'meta':
+            if percepcion[direccion] == 'meta':
                 return direccion
 
-        # Validar si el plan actual sigue siendo válido
+        # Paso 3: si aprendimos celdas nuevas, replanificar
+        celdas_ahora = len(self.mapa)
+        if celdas_ahora > self.celdas_antes:
+            self.celdas_antes = celdas_ahora
+            self.plan = self._bfs(pos)
+
+        # Paso 4: verificar que el plan sigue siendo valido
+        if self.plan and percepcion[self.plan[0]] in ('pared', None):
+            self.plan = self._bfs(pos)
+
+        # Paso 5: ejecutar siguiente accion del plan
         if self.plan:
-            siguiente = self.plan[0]
-            if percepcion.get(siguiente) in ('pared', None):
-                self.plan = []
+            return self.plan.pop(0)
 
-        # Calcular nuevo plan si no hay uno
-        if not self.plan:
-            if self.meta is not None:
-                self.plan = self._bfs_solo_conocidas(pos_actual)
+        # Paso 6: explorar si BFS no encontro ruta aun
+        return self._explorar(pos, percepcion)
 
-            # Si BFS no encontró ruta, explorar inteligentemente
-            if not self.plan:
-                return self._explorar(pos_actual, percepcion)
-
-        return self.plan.pop(0)
-    
-        
-    # ─────────────────────────────────────────────────
-    #  BFS — Búsqueda en Anchura 
-    # ─────────────────────────────────────────────────
- 
-    def _bfs_solo_conocidas(self, inicio: tuple) -> list:
-        """BFS que SOLO usa celdas confirmadas como libres."""
+    # ------------------------------------------------------------------
+    # BFS — Busqueda de Anchura con Cola 
+    # ------------------------------------------------------------------
+    def _bfs(self, inicio):
+        """
+        Busca el camino mas corto desde inicio hasta self.meta.
+        Solo avanza por celdas confirmadas como libres.
+        Retorna lista de acciones o [] si no hay camino.
+        """
         if self.meta is None:
             return []
 
         cola = deque()
         cola.append((inicio, []))
-        visitados = {inicio}
+        vistos = {inicio}
 
         while cola:
-            pos, camino = cola.popleft()
+            pos, acciones = cola.popleft()  # FIFO
 
-            for direccion, (dr, dc) in self.DELTAS.items():
-                vecino = (pos[0] + dr, pos[1] + dc)
+            for direccion, (df, dc) in self.DELTAS.items():
+                vecino = (pos[0] + df, pos[1] + dc)
 
-                if vecino in visitados:
+                if vecino in vistos:
                     continue
 
                 if vecino == self.meta:
-                    return camino + [direccion]
+                    return acciones + [direccion]  # Camino encontrado
 
-                # Solo avanzar si la celda está CONFIRMADA como libre
-                if self.mapa_local.get(vecino) == 'libre':
-                    visitados.add(vecino)
-                    cola.append((vecino, camino + [direccion]))
+                if self.mapa.get(vecino) == 'libre':
+                    vistos.add(vecino)
+                    cola.append((vecino, acciones + [direccion]))
 
-        return []
-    
-    # ─────────────────────────────────────────────────
-    #  Explorar sin loop
-    # ─────────────────────────────────────────────────
- 
-    def _explorar(self, pos_actual: tuple, percepcion: dict) -> str:
+        return []  # Sin camino actual
+
+    # ------------------------------------------------------------------
+    # Registrar lo que se ve en cada paso
+    # ------------------------------------------------------------------
+    def _registrar_percepcion(self, pos, percepcion):
         """
-        Exploración que evita loops: prioriza celdas no visitadas,
-        luego se acerca a la meta, nunca repite si puede evitarlo.
+        Actualiza el mapa interno con las celdas adyacentes visibles
+        El agente solo ve 4 celdas
         """
-        vert, horiz = percepcion.get('direccion_meta', ('abajo', 'derecha'))
+        f, c = pos
+        self.mapa[pos] = 'libre'  # La celda donde estoy es libre
 
-        # Separar opciones en: no visitadas vs visitadas
-        no_visitadas = []
-        visitadas_ok = []
+        for direccion, (df, dc) in self.DELTAS.items():
+            vecino = (f + df, c + dc)
+            estado = percepcion[direccion]
 
-        for direccion in self.ACCIONES:
-            celda = percepcion.get(direccion)
-            if celda not in ('libre', 'meta'):
-                continue
-
-            r, c = pos_actual
-            dr, dc = self.DELTAS[direccion]
-            vecino = (r + dr, c + dc)
-
-            if vecino not in self.visitadas:
-                no_visitadas.append(direccion)
-            else:
-                visitadas_ok.append(direccion)
-
-    # Ordenar no_visitadas priorizando dirección hacia la meta
-        def puntaje(d):
-            score = 0
-            if d == vert:
-                score += 2
-            if d == horiz:
-                score += 1
-            return -score  # negativo para ordenar de mayor a menor
-
-        no_visitadas.sort(key=puntaje)
-        visitadas_ok.sort(key=puntaje)
-
-        # Primero intentar celdas no visitadas
-        for direccion in no_visitadas:
-            return direccion
-
-        # Si todas fueron visitadas, ir hacia la meta de todas formas
-        for direccion in visitadas_ok:
-            return direccion
-
-        return 'abajo'
-
-    def _actualizar_mapa(self, pos: tuple, percepcion: dict):
-        r, c = pos
-        self.mapa_local[pos] = 'libre'
-
-        for direccion, (dr, dc) in self.DELTAS.items():
-            vecino = (r + dr, c + dc)
-            estado = percepcion.get(direccion)
-
-            if estado is None:
-                self.mapa_local[vecino] = 'pared'
-            elif estado == 'meta':
-                self.mapa_local[vecino] = 'libre'
-                self.meta = vecino
-            elif estado == 'pared':
-                self.mapa_local[vecino] = 'pared'
+            if estado == 'meta':
+                self.mapa[vecino] = 'libre'
+                self.meta = vecino        
+            elif estado in ('pared', None):
+                self.mapa[vecino] = 'pared'  # Pared 
             elif estado == 'libre':
-                if vecino not in self.mapa_local:
-                    self.mapa_local[vecino] = 'libre'
+                if vecino not in self.mapa:
+                    self.mapa[vecino] = 'libre'
+
+    # ------------------------------------------------------------------
+    # exploracioon cuando BFS no tiene ruta todavia
+    # ------------------------------------------------------------------
+    def _explorar(self, pos, percepcion):
+        """
+        Se usa cuando aun no conocemos suficiente del mapa.
+        Prioriza celdas no visitadas y se acerca a la meta con la brujula.
+        """
+        vert, horiz = percepcion['direccion_meta']
+
+        # Ordenams direcciones
+        orden = []
+        if vert  != 'ninguna': orden.append(vert)
+        if horiz != 'ninguna': orden.append(horiz)
+        for d in self.ACCIONES:
+            if d not in orden: orden.append(d)
+
+        f, c         = pos
+        no_visitadas = []
+        visitadas    = []
+
+        for d in orden:
+            if percepcion[d] not in ('libre', 'meta'):
+                continue
+            df, dc = self.DELTAS[d]
+            vecino = (f + df, c + dc)
+            if vecino not in self.visitadas:
+                no_visitadas.append(d)
+            else:
+                visitadas.append(d)
+
+        # ir a celdas nuevas
+        if no_visitadas: return no_visitadas[0]
+        if visitadas:    return visitadas[0]
+        return 'abajo'
